@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Kids' Sports Schedule</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f2; color: #1a1a1a; min-height: 100vh; }
+  #root { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  input, select, textarea, button { font-family: inherit; font-size: 13px; }
+  input[type=text], input[type=date], input[type=time], select, textarea { padding: 7px 10px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #1a1a1a; width: 100%; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: #888; }
+  button { cursor: pointer; border-radius: 8px; border: 1px solid #ddd; background: transparent; color: #1a1a1a; padding: 6px 14px; font-size: 12px; }
+  button:hover { background: #f0f0ee; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .card { background: #fff; border-radius: 12px; border: 1px solid #e5e5e2; overflow: hidden; margin-bottom: 1rem; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+  .week-label { font-size: 11px; font-weight: 500; color: #999; padding: 10px 14px 4px; letter-spacing: 0.05em; text-transform: uppercase; border-top: 1px solid #f0f0ee; }
+  .row { display: grid; grid-template-columns: 110px 95px 1fr 1fr 65px 55px; border-top: 1px solid #f0f0ee; align-items: center; font-size: 13px; }
+  .row:hover { background: #fafaf8; }
+  .cell { padding: 10px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .muted { color: #888; font-size: 12px; }
+  .panel { background: #fff; border-radius: 8px; border: 1px solid #e5e5e2; padding: 14px 16px; margin-bottom: 1rem; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 10px; }
+  .field-label { font-size: 11px; color: #888; margin-bottom: 4px; }
+  .filter-btn { font-size: 12px; padding: 4px 12px; border-radius: 20px; border: 1px solid #ddd; background: transparent; color: #1a1a1a; }
+  .filter-btn.active { border-color: #888; background: #f0f0ee; font-weight: 500; }
+  .toggle { width: 30px; height: 17px; border-radius: 9px; position: relative; cursor: pointer; transition: background 0.2s; border: none; padding: 0; }
+  .toggle-thumb { width: 13px; height: 13px; border-radius: 50%; background: white; position: absolute; top: 2px; transition: left 0.2s; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #ddd; border-top-color: #888; border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 600px) { .row { grid-template-columns: 100px 80px 1fr 50px; } .hide-mobile { display: none; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const SUPABASE_URL = "https://xgptcgkwsdxbhmdooset.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhncHRjZ2t3c2R4YmhtZG9vc2V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM0NTg2NTIsImV4cCI6MjA4OTAzNDY1Mn0.ic6kqFTIaTUnPBnyJb0tAmuaUthIfBTiF_qm1tp0xlg";
+const ANTHROPIC_KEY = ""; // removed for security
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const SPORT_COLORS = {
+  Soccer:     { bg:"#E1F5EE", text:"#085041" },
+  Baseball:   { bg:"#E6F1FB", text:"#0C447C" },
+  Basketball: { bg:"#FAEEDA", text:"#633806" },
+  Softball:   { bg:"#FBEAF0", text:"#72243E" },
+  Football:   { bg:"#FAECE7", text:"#712B13" },
+  Other:      { bg:"#F1EFE8", text:"#444441" },
+};
+const SPORTS = Object.keys(SPORT_COLORS);
+const SRC = { outlook:"Outlook", paste:"Pasted", ai:"AI scan", manual:"Manual", ics:"Imported" };
+
+const fmt12 = t => { if (!t) return ""; const [h,m]=t.split(":").map(Number); return `${h%12||12}:${String(m).padStart(2,"0")}${h<12?"am":"pm"}`; };
+const fmtDate = d => new Date(d+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"});
+
+const groupByWeek = evts => {
+  const weeks = {};
+  evts.forEach(e => {
+    const dt=new Date(e.date+"T12:00:00"), dow=dt.getDay();
+    const mon=new Date(dt); mon.setDate(dt.getDate()-(dow===0?6:dow-1));
+    const sun=new Date(mon); sun.setDate(mon.getDate()+6);
+    const key=mon.toISOString().slice(0,10);
+    const label=`${mon.toLocaleDateString("en-US",{month:"short",day:"numeric"})} – ${sun.toLocaleDateString("en-US",{month:"short",day:"numeric"})}`;
+    if (!weeks[key]) weeks[key]={label,events:[]};
+    weeks[key].events.push(e);
+  });
+  return weeks;
+};
+
+const parseICS = (text, nextId) => {
+  const unwrapped = text.replace(/\r\n[ \t]/g,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+
+  const calNameMatch = unwrapped.match(/X-WR-CALNAME:([^\n]+)/i);
+  const calName = calNameMatch ? calNameMatch[1].trim() : "";
+
+  const utcToLocal = dtstr => {
+    const isUTC = dtstr.endsWith("Z");
+    const cleanDt = dtstr.replace(/[TZ]/g," ").trim();
+    const parts = cleanDt.split(" ");
+    const datePart = parts[0].replace(/-/g,"");
+    const timePart = parts[1] ? parts[1].slice(0,4) : "0000";
+    if (!isUTC) return { date:`${datePart.slice(0,4)}-${datePart.slice(4,6)}-${datePart.slice(6,8)}`, time:`${timePart.slice(0,2)}:${timePart.slice(2,4)}` };
+    const utcH = parseInt(timePart.slice(0,2));
+    const utcM = parseInt(timePart.slice(2,4));
+    const utcY = parseInt(datePart.slice(0,4));
+    const utcMo = parseInt(datePart.slice(4,6))-1;
+    const utcD = parseInt(datePart.slice(6,8));
+    const d = new Date(Date.UTC(utcY,utcMo,utcD,utcH,utcM));
+    const local = new Date(d.toLocaleString("en-US",{timeZone:"America/Los_Angeles"}));
+    const y = local.getFullYear();
+    const mo = String(local.getMonth()+1).padStart(2,"0");
+    const day = String(local.getDate()).padStart(2,"0");
+    const h = String(local.getHours()).padStart(2,"0");
+    const m = String(local.getMinutes()).padStart(2,"0");
+    return { date:`${y}-${mo}-${day}`, time:`${h}:${m}` };
+  };
+
+  const evtBlocks = unwrapped.split("BEGIN:VEVENT").slice(1);
+  return evtBlocks.map(block => {
+    const get = key => { const m = block.match(new RegExp("(?:^|\n)"+key+"(?:;[^:]+)?:([^\n]+)","i")); return m ? m[1].trim().replace(/\\,/g,",").replace(/\\n/g," ") : ""; };
+    const dtstart = get("DTSTART");
+    const { date, time } = utcToLocal(dtstart);
+    const summary = get("SUMMARY");
+    const location = get("LOCATION") || "TBD";
+    const desc = get("DESCRIPTION");
+    const combined = (summary+desc+calName).toLowerCase();
+    const sport = SPORTS.find(s => combined.includes(s.toLowerCase()))
+      || (combined.match(/baseball|tee.?ball|softball|little.?league|padres|yankees|cubs|sox|batting/) ? "Baseball"
+      : combined.match(/basketball|hoops|court|thrive|exposure|3ssb|aau|g365|adidas|titans|wolverines|sol |thrive|jr\.?\s*nba|ybl|iba/) ? "Basketball"
+      : "Other");
+    const vsParts = summary.split(/\s+(?:vs\.?|@)\s+/i);
+    const isAway = /@/.test(summary);
+    const team = isAway ? (vsParts[0]||summary).trim() : (vsParts[vsParts.length-1]||summary).trim();
+    const opponent = vsParts.length>1 ? (isAway ? vsParts[1] : vsParts[0]).trim() : "Practice";
+    return { id:"ics-"+nextId.current++, date, time, sport, team, level:"", opponent, location, source:"ics", reminder:false };
+  }).filter(e => e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date));
+};
+
+const Badge = ({sport}) => { const c=SPORT_COLORS[sport]||SPORT_COLORS.Other; return <span className="badge" style={{background:c.bg,color:c.text}}>{sport}</span>; };
+const blankForm = {date:"",time:"",sport:"Soccer",team:"",level:"",opponent:"",location:"",reminder:false};
+
+function App() {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("All");
+  const [remindersOnly, setRemindersOnly] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [parsing, setParsing] = useState(false);
+  const [panel, setPanel] = useState(null);
+  const [form, setForm] = useState(blankForm);
+  const [formErr, setFormErr] = useState("");
+  const nextId = useRef(Date.now());
+
+  useEffect(() => { fetchEvents(); }, []);
+
+  const fetchEvents = async () => {
+    setLoading(true);
+    const { data, error } = await sb.from("events").select("*");
+    if (!error && data) setEvents(data);
+    setLoading(false);
+  };
+
+  const addEvents = async newEvts => {
+    const { data, error } = await sb.from("events").insert(newEvts).select();
+    if (!error && data) setEvents(ev => [...ev, ...data]);
+    else alert("Error saving events. Please try again.");
+  };
+
+  const deleteEvent = async id => {
+    await sb.from("events").delete().eq("id", id);
+    setEvents(ev => ev.filter(e => e.id !== id));
+  };
+
+  const toggleReminder = async (id, current) => {
+    await sb.from("events").update({reminder: !current}).eq("id", id);
+    setEvents(ev => ev.map(e => e.id===id ? {...e, reminder:!current} : e));
+  };
+
+  const sportsInUse = ["All", ...SPORTS.filter(s=>events.some(e=>e.sport===s))];
+  const filtered = events
+    .filter(e=>filter==="All"||e.sport===filter)
+    .filter(e=>!remindersOnly||e.reminder)
+    .sort((a,b)=>a.date===b.date?b.time.localeCompare(a.time):b.date.localeCompare(a.date));
+  const weeks = groupByWeek(filtered);
+
+  const callClaude = async prompt => {
+    const r = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})});
+    const d = await r.json(); return d.content?.[0]?.text||"";
+  };
+
+  const parsePaste = async () => {
+    if (!pasteText.trim()) return;
+    setParsing(true);
+    try {
+      const today = new Date().toISOString().slice(0,10);
+      const raw = await callClaude(`Extract sports schedule events from this text. Return ONLY a JSON array (no markdown, no preamble) with fields: date (YYYY-MM-DD), time (HH:MM 24h), sport (Soccer/Baseball/Basketball/Softball/Football/Other), team, level (team level/division e.g. "Wolverines 6thC" or ""), opponent (or "Practice"/"TBD"), location. Use "TBD" for unknowns. Today is ${today}.\n\n${pasteText}`);
+      const parsed = JSON.parse(raw.replace(/```json|```/g,"").trim());
+      const newEvts = parsed.map(e=>({...e, id:"paste-"+nextId.current++, source:"paste", reminder:false}));
+      await addEvents(newEvts);
+      setPasteText("");
+    } catch { alert("Could not parse schedule. Check your API key or try pasting cleaner text."); }
+    setParsing(false);
+  };
+
+  const importICS = e => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const parsed = parseICS(ev.target.result, nextId);
+      await addEvents(parsed);
+      alert(`Imported ${parsed.length} event${parsed.length!==1?"s":""} from ${file.name}`);
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const submitForm = async () => {
+    if (!form.date||!form.time||!form.team) { setFormErr("Date, time, and team are required."); return; }
+    await addEvents([{...form, id:"manual-"+nextId.current++, source:"manual"}]);
+    setForm(blankForm); setFormErr(""); setPanel(null);
+  };
+
+  const exportICS = () => {
+    const toICS = e => { const [y,mo,d]=e.date.split("-"); const [h,m]=e.time.split(":"); const start=`${y}${mo}${d}T${h}${m}00`; const endH=String((parseInt(h)+1)%24).padStart(2,"0"); return `BEGIN:VEVENT\nSUMMARY:${e.sport} – ${e.level||e.team} vs ${e.opponent}\nDTSTART:${start}\nDTEND:${y}${mo}${d}T${endH}${m}00\nLOCATION:${e.location}\nEND:VEVENT`; };
+    const ics=`BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Sports Schedule//EN\n${filtered.map(toICS).join("\n")}\nEND:VCALENDAR`;
+    const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([ics],{type:"text/calendar"})); a.download="sports_schedule.ics"; a.click();
+  };
+
+  const exportCSV = () => {
+    const hdr="Date,Time,Sport,Team,Level,Opponent,Location,Source,Reminder\n";
+    const rows=filtered.map(e=>`${e.date},${e.time},${e.sport},"${e.team}","${e.level||""}","${e.opponent}","${e.location}",${e.source},${e.reminder}`).join("\n");
+    const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([hdr+rows],{type:"text/csv"})); a.download="sports_schedule.csv"; a.click();
+  };
+
+  const clearAll = async () => {
+    if (window.confirm("Clear ALL events for the whole family? This cannot be undone.")) {
+      await sb.from("events").delete().neq("id","_");
+      setEvents([]);
+    }
+  };
+
+  const inp = {padding:"7px 10px",fontSize:13,borderRadius:8,border:"1px solid #ddd",background:"#fff",color:"#1a1a1a",width:"100%"};
+
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8,marginBottom:"1rem"}}>
+        <div>
+          <h1 style={{fontSize:20,fontWeight:500}}>Kids' sports schedule</h1>
+          <div style={{fontSize:13,color:"#888",marginTop:2}}>{events.length} events · {events.filter(e=>e.reminder).length} reminders · <span style={{color:"#1D9E75"}}>live shared</span></div>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {[["add","+ Add event"],["forward","Gmail tips"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setPanel(p=>p===v?null:v)} style={{borderColor:panel===v?"#888":"#ddd",background:panel===v?"#f0f0ee":"transparent"}}>{l}</button>
+          ))}
+          <label style={{fontSize:12,padding:"6px 12px",borderRadius:8,border:"1px solid #ddd",background:"transparent",color:"#1a1a1a",cursor:"pointer"}}>
+            📅 Import .ics<input type="file" accept=".ics" onChange={importICS} style={{display:"none"}}/>
+          </label>
+          <button onClick={exportICS}>📅 Export .ics</button>
+          <button onClick={exportCSV}>CSV</button>
+          <button onClick={fetchEvents} title="Refresh">↻</button>
+          <button onClick={clearAll} style={{color:"#A32D2D",borderColor:"#f5c1c1"}}>Clear all</button>
+        </div>
+      </div>
+
+      {panel==="add" && (
+        <div className="panel">
+          <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>Add event manually</div>
+          <div className="grid2">
+            {[["date","Date","date"],["time","Time","time"],["team","Team name","text"],["level","Team level (e.g. Wolverines 6thC)","text"],["opponent","Opponent","text"],["location","Location","text"]].map(([k,ph,tp])=>(
+              <div key={k}><div className="field-label">{ph}</div><input type={tp} value={form[k]} onChange={e=>setForm(f=>({...f,[k]:e.target.value}))} style={inp}/></div>
+            ))}
+            <div><div className="field-label">Sport</div><select value={form.sport} onChange={e=>setForm(f=>({...f,sport:e.target.value}))} style={inp}>{SPORTS.map(s=><option key={s}>{s}</option>)}</select></div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <input type="checkbox" id="rem" checked={form.reminder} onChange={e=>setForm(f=>({...f,reminder:e.target.checked}))}/>
+            <label htmlFor="rem" style={{fontSize:13,color:"#888"}}>Set reminder</label>
+          </div>
+          {formErr && <div style={{fontSize:12,color:"#A32D2D",marginBottom:8}}>{formErr}</div>}
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={submitForm} style={{borderColor:"#888"}}>Add event</button>
+            <button onClick={()=>{setPanel(null);setForm(blankForm);setFormErr("");}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {panel==="forward" && (
+        <div className="panel">
+          <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>Getting Gmail schedules without the connector</div>
+          {[
+            ["1","Auto-forward to Outlook","In Gmail: Settings → See all settings → Forwarding → Add a forwarding address (your Outlook email). Create a filter for league senders to auto-forward."],
+            ["2","Copy & paste","Open any Gmail schedule email, select all text, paste into the box below."],
+            ["3","Export .ics from TeamSnap / SportsEngine","Go to Schedule → Export, download the .ics file, then use the Import .ics button above."],
+            ["4","webcal:// links","Replace webcal:// with https:// and paste in your browser — it downloads a .ics file you can import."],
+          ].map(([n,title,body])=>(
+            <div key={n} style={{display:"flex",gap:12,marginBottom:14}}>
+              <div style={{width:22,height:22,borderRadius:"50%",background:"#f0f0ee",border:"1px solid #ddd",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:500,flexShrink:0,color:"#888"}}>{n}</div>
+              <div><div style={{fontSize:13,fontWeight:500,marginBottom:3}}>{title}</div><div style={{fontSize:12,color:"#888",lineHeight:1.6}}>{body}</div></div>
+            </div>
+          ))}
+          <button onClick={()=>setPanel(null)}>Close</button>
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:8,marginBottom:"1rem",flexWrap:"wrap",alignItems:"center"}}>
+        {sportsInUse.map(s=>(
+          <button key={s} className={`filter-btn${filter===s?" active":""}`} onClick={()=>setFilter(s)}>{s}</button>
+        ))}
+        <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+          <span style={{fontSize:12,color:"#888"}}>Reminders only</span>
+          <button className="toggle" onClick={()=>setRemindersOnly(r=>!r)} style={{background:remindersOnly?"#D85A30":"#ddd",border:"none"}}>
+            <div className="toggle-thumb" style={{left:remindersOnly?15:2}}></div>
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        {loading ? (
+          <div style={{padding:"2rem",textAlign:"center",color:"#aaa",fontSize:13}}>
+            <div className="spinner" style={{margin:"0 auto 8px"}}></div>
+            Loading schedule…
+          </div>
+        ) : (
+          <>
+            {Object.entries(weeks).sort(([a],[b])=>b.localeCompare(a)).map(([key,{label,events:wevts}])=>(
+              <div key={key}>
+                <div className="week-label">{label}</div>
+                {wevts.map(e=>(
+                  <div key={e.id} className="row">
+                    <div className="cell"><div style={{fontWeight:500}}>{fmtDate(e.date)}</div><div className="muted">{fmt12(e.time)}</div></div>
+                    <div className="cell"><Badge sport={e.sport}/><div className="muted" style={{marginTop:3,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.level||e.team}</div></div>
+                    <div className="cell">{e.opponent}</div>
+                    <div className="cell hide-mobile" style={{color:"#888"}}>{e.location}</div>
+                    <div className="cell hide-mobile" style={{textAlign:"center",fontSize:11,color:"#aaa"}}>{SRC[e.source]||e.source}</div>
+                    <div className="cell" style={{display:"flex",gap:8,justifyContent:"flex-end",alignItems:"center"}}>
+                      <span onClick={()=>toggleReminder(e.id,e.reminder)} title="Toggle reminder" style={{cursor:"pointer",width:10,height:10,borderRadius:"50%",background:e.reminder?"#D85A30":"#ddd",display:"inline-block",flexShrink:0}}></span>
+                      <span onClick={()=>deleteEvent(e.id)} style={{fontSize:15,color:"#bbb",cursor:"pointer"}}>×</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+            {filtered.length===0 && <div style={{padding:"2rem",textAlign:"center",color:"#aaa",fontSize:13}}>No events yet. Import an .ics file or paste a schedule below!</div>}
+          </>
+        )}
+
+        <div style={{borderTop:"1px solid #f0f0ee",padding:"12px 14px",background:"#fafaf8"}}>
+          <div style={{fontSize:12,fontWeight:500,color:"#555",marginBottom:6}}>Paste schedule text</div>
+          <div style={{fontSize:12,color:"#888",marginBottom:8}}>Paste any schedule — email, text, TeamSnap page — and Claude will extract the events.</div>
+          <div style={{display:"flex",gap:8}}>
+            <textarea value={pasteText} onChange={e=>setPasteText(e.target.value)} placeholder="Paste schedule text here…" rows={2} style={{flex:1,padding:"8px 10px",fontSize:13,borderRadius:8,border:"1px solid #ddd",background:"#fff",color:"#1a1a1a",resize:"vertical",fontFamily:"inherit"}}/>
+            <button onClick={parsePaste} disabled={parsing||!pasteText.trim()} style={{whiteSpace:"nowrap",alignSelf:"flex-start",borderColor:"#888"}}>{parsing?"Parsing…":"Parse ↗"}</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{fontSize:11,color:"#bbb",marginTop:"0.5rem"}}>
+        Schedule is shared live with your whole family · Orange dot = reminder · Click to toggle · × to delete
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
